@@ -151,7 +151,8 @@ export class PostgresDriver implements Driver {
         "daterange",
         "geometry",
         "geography",
-        "cube"
+        "cube",
+        "ltree"
     ];
 
     /**
@@ -328,6 +329,7 @@ export class PostgresDriver implements Driver {
             hasHstoreColumns,
             hasCubeColumns,
             hasGeometryColumns,
+            hasLtreeColumns,
             hasExclusionConstraints,
         } = extensionsMetadata;
 
@@ -361,6 +363,12 @@ export class PostgresDriver implements Driver {
             } catch (_) {
                 logger.log("warn", "At least one of the entities has a cube column, but the 'cube' extension cannot be installed automatically. Please install it manually using superuser rights");
             }
+        if (hasLtreeColumns)
+            try {
+                await this.executeQuery(connection, `CREATE EXTENSION IF NOT EXISTS "ltree"`);
+            } catch (_) {
+                logger.log("warn", "At least one of the entities has a cube column, but the 'ltree' extension cannot be installed automatically. Please install it manually using superuser rights");
+            }
         if (hasExclusionConstraints)
             try {
                 // The btree_gist extension provides operator support in PostgreSQL exclusion constraints
@@ -386,6 +394,9 @@ export class PostgresDriver implements Driver {
         const hasGeometryColumns = this.connection.entityMetadatas.some(metadata => {
             return metadata.columns.filter(column => this.spatialTypes.indexOf(column.type) >= 0).length > 0;
         });
+        const hasLtreeColumns = this.connection.entityMetadatas.some(metadata => {
+            return metadata.columns.filter(column => column.type === 'ltree').length > 0;
+        });
         const hasExclusionConstraints = this.connection.entityMetadatas.some(metadata => {
             return metadata.exclusions.length > 0;
         });
@@ -396,8 +407,9 @@ export class PostgresDriver implements Driver {
             hasHstoreColumns,
             hasCubeColumns,
             hasGeometryColumns,
+            hasLtreeColumns,
             hasExclusionConstraints,
-            hasExtensions: hasUuidColumns || hasCitextColumns || hasHstoreColumns || hasGeometryColumns || hasCubeColumns || hasExclusionConstraints,
+            hasExtensions: hasUuidColumns || hasCitextColumns || hasHstoreColumns || hasGeometryColumns || hasCubeColumns || hasLtreeColumns || hasExclusionConstraints,
         };
     }
 
@@ -487,6 +499,8 @@ export class PostgresDriver implements Driver {
             }
             return `(${value.join(",")})`;
 
+        } else if (columnMetadata.type === "ltree") {
+            return value.split(".").filter(Boolean).join('.').replace(/[\s]+/g, "_");
         } else if (
             (
                 columnMetadata.type === "enum"
@@ -898,6 +912,13 @@ export class PostgresDriver implements Driver {
         return true;
     }
 
+    /**
+     * Returns true if driver supports fulltext indices.
+     */
+    isFullTextColumnTypeSupported(): boolean {
+        return false;
+    }
+
     get uuidGenerator(): string {
         return this.options.uuidExtension === "pgcrypto" ? "gen_random_uuid()" : "uuid_generate_v4()";
     }
@@ -980,6 +1001,15 @@ export class PostgresDriver implements Driver {
         return new Promise((ok, fail) => {
             pool.connect((err: any, connection: any, release: Function) => {
                 if (err) return fail(err);
+
+                if (options.logNotifications) {
+                    connection.on("notice", (msg: any) => {
+                        msg && this.connection.logger.log("info", msg.message);
+                    });
+                    connection.on("notification", (msg: any) => {
+                        msg && this.connection.logger.log("info", `Received NOTIFY on channel ${msg.channel}: ${msg.payload}.`);
+                    });
+                }
                 release();
                 ok(pool);
             });
